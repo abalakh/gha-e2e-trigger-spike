@@ -1,0 +1,46 @@
+name: Concurrency spike
+run-name: "concurrency ${{ github.event.head_commit.message }}"
+
+on:
+  push:
+    branches: [conc]
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - id: decide
+        env:
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ $MESSAGE == *"decision:skip"* ]]; then echo decision=skip; else echo decision=run; fi >> "$GITHUB_OUTPUT"
+
+  plain:
+    needs: prepare
+    if: needs.prepare.outputs.decision == 'run'
+    concurrency:
+      group: spike-plain
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 300
+
+  reusable:
+    needs: prepare
+    if: needs.prepare.outputs.decision == 'run'
+    concurrency:
+      group: spike-reusable
+      cancel-in-progress: true
+    uses: ./.github/workflows/sleep.yml
+
+  queued:
+    needs: prepare
+    if: needs.prepare.outputs.decision == 'run'
+    concurrency:
+      group: spike-queued
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 300

@@ -1,0 +1,48 @@
+name: Checks spike
+run-name: "checks ${{ github.event.action }}: ${{ github.event.pull_request.title }}"
+
+on:
+  pull_request:
+    types: [edited]
+    branches: [checks-base]
+
+permissions:
+  checks: write
+
+jobs:
+  scenario:
+    # A job named "Spike Trial" only for the job-* scenarios, so api-* runs add no job check run
+    # with that name.
+    name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]')) && 'Spike Trial' || 'Spike Worker' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scenario
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          create() {
+            gh api "repos/$REPO/check-runs" -X POST -f name='Spike Trial' -f head_sha="$SHA" "$@" \
+              --jq '{id, status, conclusion, check_suite: .check_suite.id, app: .app.slug, app_id: .app.id}'
+          }
+          if [[ $TITLE =~ \[job-pass\] ]]; then
+            echo "job check run passes"
+          elif [[ $TITLE =~ \[job-fail\] ]]; then
+            echo "job check run fails"; exit 1
+          elif [[ $TITLE =~ \[api-(success|failure)\] ]]; then
+            create -f status=completed -f conclusion="${BASH_REMATCH[1]}"
+          elif [[ $TITLE =~ \[api-lock-(success|failure)-([0-9]+)\] ]]; then
+            conclusion=${BASH_REMATCH[1]} hold=${BASH_REMATCH[2]}
+            out=$(create -f status=in_progress)
+            echo "$out"
+            id=$(jq -r .id <<<"$out")
+            echo "holding check run $id for ${hold}s"
+            sleep "$hold"
+            gh api "repos/$REPO/check-runs/$id" -X PATCH -f status=completed -f conclusion="$conclusion" \
+              --jq '{id, status, conclusion, completed_at}'
+          else
+            echo "no scenario in title"
+          fi

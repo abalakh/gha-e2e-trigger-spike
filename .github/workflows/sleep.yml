@@ -1,0 +1,9 @@
+name: Sleep
+on:
+  workflow_call:
+
+jobs:
+  sleep:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 300
