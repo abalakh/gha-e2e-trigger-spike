@@ -77,3 +77,31 @@ jobs:
           gh api "repos/$REPO/check-runs/$LOCK" -X PATCH -f status=completed -f conclusion="$conclusion" \
             --jq '{id, status, conclusion, completed_at}'
           [[ $conclusion == success ]]
+
+  # Lock without the API: an early "Spike Trial" fails at once, a later one in the same run
+  # overrides it.
+  early:
+    if: contains(github.event.pull_request.title, '[early-lock-')
+    name: ${{ contains(github.event.pull_request.title, '[early-lock-') && 'Spike Trial' || 'Spike Early' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e is running"; exit 1
+
+  e2e:
+    if: contains(github.event.pull_request.title, '[early-lock-')
+    name: Spike E2E
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          [[ $TITLE =~ \[early-lock-([0-9]+)\] ]]
+          sleep "${BASH_REMATCH[1]}"
+
+  final:
+    needs: [early, e2e]
+    if: always() && contains(github.event.pull_request.title, '[early-lock-')
+    name: ${{ contains(github.event.pull_request.title, '[early-lock-') && 'Spike Trial' || 'Spike Final' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e passed"
