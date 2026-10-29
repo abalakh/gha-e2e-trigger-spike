@@ -1,0 +1,114 @@
+name: Trial spike
+run-name: "trial ${{ github.event.action }}: ${{ github.event.pull_request.title }}"
+
+# Mirrors the proposed default.yml shape. The title names the scenario:
+#   [plain qa=N]           no e2e
+#   [e2e=pass:N qa=M]      e2e that sleeps N seconds and passes (or fail:N)
+#   [noop]                 unrelated event
+on:
+  pull_request:
+    types: [edited]
+    branches: [trial-base]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      e2e_seconds: ${{ steps.plan.outputs.e2e_seconds }}
+      qa_seconds: ${{ steps.plan.outputs.qa_seconds }}
+    steps:
+      - id: plan
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          {
+            if [[ $TITLE =~ \[noop\] ]]; then
+              echo mode=noop
+            elif [[ $TITLE =~ \[e2e=(pass|fail):([0-9]+)\ qa=([0-9]+)\] ]]; then
+              echo mode=e2e; echo "e2e=${BASH_REMATCH[1]}"
+              echo "e2e_seconds=${BASH_REMATCH[2]}"; echo "qa_seconds=${BASH_REMATCH[3]}"
+            elif [[ $TITLE =~ \[plain\ qa=([0-9]+)\] ]]; then
+              echo mode=plain; echo "qa_seconds=${BASH_REMATCH[1]}"
+            else
+              echo mode=noop
+            fi
+          } | tee -a "$GITHUB_OUTPUT"
+
+  lock:
+    needs: prepare
+    if: always() && needs.prepare.outputs.mode == 'e2e'
+    name: Spike Trial
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the final Spike Trial job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          until [[ $(gh api "repos/$REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs" \
+              --jq '[.jobs[] | select(.name == "Spike Trial")] | length') -ge 2 ]]; do
+            sleep 5
+          done
+          echo "final Spike Trial job exists"
+
+  e2e:
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'e2e'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SECONDS_: ${{ needs.prepare.outputs.e2e_seconds }}
+          RESULT: ${{ needs.prepare.outputs.e2e }}
+        run: sleep "$SECONDS_"; [[ $RESULT == pass ]]
+
+  qa:
+    needs: prepare
+    if: needs.prepare.outputs.mode != 'noop'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SECONDS_: ${{ needs.prepare.outputs.qa_seconds }}
+        run: sleep "$SECONDS_"
+
+  trial:
+    needs: [prepare, e2e, qa]
+    if: always()
+    name: Spike Trial
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MODE: ${{ needs.prepare.outputs.mode }}
+          RESULTS: ${{ needs.prepare.result }} ${{ needs.e2e.result }} ${{ needs.qa.result }}
+        run: |
+          set -euo pipefail
+          if [[ $MODE != noop ]]; then
+            echo "needs: $RESULTS"
+            for r in $RESULTS; do [[ $r == success || $r == skipped ]] || exit 1; done
+            exit 0
+          fi
+          workflow=$(gh api "repos/$REPO/actions/runs/$RUN" --jq .workflow_id)
+          prev=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+            --jq "[.workflow_runs[] | select(.workflow_id == $workflow and .id < $RUN)] | max_by(.id) | .id // empty")
+          if [[ -z $prev ]]; then echo "no earlier run on the head"; exit 1; fi
+          echo "repeating run $prev"
+          until [[ $(gh api "repos/$REPO/actions/runs/$prev" --jq .status) == completed ]]; do sleep 10; done
+          conclusions=$(gh api "repos/$REPO/actions/runs/$prev/jobs" \
+            --jq '[.jobs[] | select(.name == "Spike Trial") | .conclusion] | join(" ")')
+          echo "run $prev Spike Trial conclusions: $conclusions"
+          [[ -n $conclusions ]]
+          for c in $conclusions; do [[ $c == success || $c == skipped ]] || exit 1; done

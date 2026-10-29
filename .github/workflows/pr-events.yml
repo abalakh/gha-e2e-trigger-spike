@@ -4,7 +4,7 @@ run-name: "pr-events ${{ github.event.action }} #${{ github.event.number }} base
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, closed]
-    branches-ignore: [checks-base]
+    branches-ignore: [checks-base, trial-base]
 
 jobs:
   log:
