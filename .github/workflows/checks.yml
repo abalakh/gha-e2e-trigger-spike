@@ -13,7 +13,7 @@ jobs:
   scenario:
     # A job named "Spike Trial" only for the job-* scenarios, so api-* runs add no job check run
     # with that name.
-    name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]')) && 'Spike Trial' || 'Spike Worker' }}
+    name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]') || contains(github.event.pull_request.title, '[fail-first-attempt]')) && 'Spike Trial' || 'Spike Worker' }}
     runs-on: ubuntu-latest
     outputs:
       lock: ${{ steps.scenario.outputs.lock }}
@@ -35,6 +35,8 @@ jobs:
             echo "job check run passes"
           elif [[ $TITLE =~ \[job-fail\] ]]; then
             echo "job check run fails"; exit 1
+          elif [[ $TITLE =~ \[fail-first-attempt\] ]]; then
+            echo "attempt $GITHUB_RUN_ATTEMPT"; [[ $GITHUB_RUN_ATTEMPT != 1 ]]
           elif [[ $TITLE =~ \[api-(success|failure)\] ]]; then
             create -f status=completed -f conclusion="${BASH_REMATCH[1]}"
           elif [[ $TITLE =~ \[api-lock-(success|failure)-([0-9]+)\] ]]; then
