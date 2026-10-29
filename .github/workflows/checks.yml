@@ -13,10 +13,13 @@ jobs:
   scenario:
     # A job named "Spike Trial" only for the job-* scenarios, so api-* runs add no job check run
     # with that name.
-    name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]')) && 'Spike Trial' || 'Spike Worker' }}
+    name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]') || contains(github.event.pull_request.title, '[fail-first-attempt]')) && 'Spike Trial' || 'Spike Worker' }}
     runs-on: ubuntu-latest
+    outputs:
+      lock: ${{ steps.scenario.outputs.lock }}
     steps:
       - name: Scenario
+        id: scenario
         env:
           TITLE: ${{ github.event.pull_request.title }}
           SHA: ${{ github.event.pull_request.head.sha }}
@@ -32,6 +35,8 @@ jobs:
             echo "job check run passes"
           elif [[ $TITLE =~ \[job-fail\] ]]; then
             echo "job check run fails"; exit 1
+          elif [[ $TITLE =~ \[fail-first-attempt\] ]]; then
+            echo "attempt $GITHUB_RUN_ATTEMPT"; [[ $GITHUB_RUN_ATTEMPT != 1 ]]
           elif [[ $TITLE =~ \[api-(success|failure)\] ]]; then
             create -f status=completed -f conclusion="${BASH_REMATCH[1]}"
           elif [[ $TITLE =~ \[api-lock-(success|failure)-([0-9]+)\] ]]; then
@@ -43,6 +48,62 @@ jobs:
             sleep "$hold"
             gh api "repos/$REPO/check-runs/$id" -X PATCH -f status=completed -f conclusion="$conclusion" \
               --jq '{id, status, conclusion, completed_at}'
+          elif [[ $TITLE =~ \[lock-then-trial-(success|failure)-([0-9]+)\] ]]; then
+            hold=${BASH_REMATCH[2]}
+            out=$(create -f status=in_progress)
+            echo "$out"
+            echo "lock=$(jq -r .id <<<"$out")" >> "$GITHUB_OUTPUT"
+            echo "holding for ${hold}s"
+            sleep "$hold"
           else
             echo "no scenario in title"
           fi
+
+  trial:
+    # Like the Trial job: its check run is created only after the job it needs ends.
+    needs: scenario
+    if: contains(github.event.pull_request.title, '[lock-then-trial-')
+    name: ${{ contains(github.event.pull_request.title, '[lock-then-trial-') && 'Spike Trial' || 'Spike Tail' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Complete the lock
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          LOCK: ${{ needs.scenario.outputs.lock }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $TITLE =~ \[lock-then-trial-(success|failure)- ]]
+          conclusion=${BASH_REMATCH[1]}
+          gh api "repos/$REPO/check-runs/$LOCK" -X PATCH -f status=completed -f conclusion="$conclusion" \
+            --jq '{id, status, conclusion, completed_at}'
+          [[ $conclusion == success ]]
+
+  # Lock without the API: an early "Spike Trial" fails at once, a later one in the same run
+  # overrides it.
+  early:
+    if: contains(github.event.pull_request.title, '[early-lock-')
+    name: ${{ contains(github.event.pull_request.title, '[early-lock-') && 'Spike Trial' || 'Spike Early' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e is running"; exit 1
+
+  e2e:
+    if: contains(github.event.pull_request.title, '[early-lock-')
+    name: Spike E2E
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          [[ $TITLE =~ \[early-lock-([0-9]+)\] ]]
+          sleep "${BASH_REMATCH[1]}"
+
+  final:
+    needs: [early, e2e]
+    if: always() && contains(github.event.pull_request.title, '[early-lock-')
+    name: ${{ contains(github.event.pull_request.title, '[early-lock-') && 'Spike Trial' || 'Spike Final' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e passed"
