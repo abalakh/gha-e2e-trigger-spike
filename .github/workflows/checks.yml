@@ -15,8 +15,11 @@ jobs:
     # with that name.
     name: ${{ (contains(github.event.pull_request.title, '[job-pass]') || contains(github.event.pull_request.title, '[job-fail]')) && 'Spike Trial' || 'Spike Worker' }}
     runs-on: ubuntu-latest
+    outputs:
+      lock: ${{ steps.scenario.outputs.lock }}
     steps:
       - name: Scenario
+        id: scenario
         env:
           TITLE: ${{ github.event.pull_request.title }}
           SHA: ${{ github.event.pull_request.head.sha }}
@@ -43,6 +46,34 @@ jobs:
             sleep "$hold"
             gh api "repos/$REPO/check-runs/$id" -X PATCH -f status=completed -f conclusion="$conclusion" \
               --jq '{id, status, conclusion, completed_at}'
+          elif [[ $TITLE =~ \[lock-then-trial-(success|failure)-([0-9]+)\] ]]; then
+            hold=${BASH_REMATCH[2]}
+            out=$(create -f status=in_progress)
+            echo "$out"
+            echo "lock=$(jq -r .id <<<"$out")" >> "$GITHUB_OUTPUT"
+            echo "holding for ${hold}s"
+            sleep "$hold"
           else
             echo "no scenario in title"
           fi
+
+  trial:
+    # Like the Trial job: its check run is created only after the job it needs ends.
+    needs: scenario
+    if: contains(github.event.pull_request.title, '[lock-then-trial-')
+    name: ${{ contains(github.event.pull_request.title, '[lock-then-trial-') && 'Spike Trial' || 'Spike Tail' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Complete the lock
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          LOCK: ${{ needs.scenario.outputs.lock }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $TITLE =~ \[lock-then-trial-(success|failure)- ]]
+          conclusion=${BASH_REMATCH[1]}
+          gh api "repos/$REPO/check-runs/$LOCK" -X PATCH -f status=completed -f conclusion="$conclusion" \
+            --jq '{id, status, conclusion, completed_at}'
+          [[ $conclusion == success ]]
