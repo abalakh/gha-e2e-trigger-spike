@@ -1,0 +1,51 @@
+# Does a job that calls a reusable workflow show a name built from needs outputs?
+on:
+  push:
+    branches: [job-name]
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_note: reused, success on 5ee3466
+      skip_note: skipped, not affected
+      empty_note: ''
+    steps:
+      - run: echo prepare
+
+  images:
+    needs: prepare
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo images
+
+  # Skipped by its if.
+  reuse:
+    name: ${{ needs.prepare.outputs.reuse_note && format('E2E Backend ({0})', needs.prepare.outputs.reuse_note) || 'E2E Backend' }}
+    needs: prepare
+    if: needs.prepare.outputs.empty_note == 'run'
+    uses: ./.github/workflows/job-name-called.yml
+
+  # Skipped because a job it needs was skipped, as when images skip.
+  skip-by-needs:
+    name: ${{ needs.prepare.outputs.skip_note && format('E2E Backend ({0})', needs.prepare.outputs.skip_note) || 'E2E Backend' }}
+    needs: [prepare, images]
+    if: needs.prepare.outputs.empty_note == ''
+    uses: ./.github/workflows/job-name-called.yml
+
+  # Runs, with an empty note, so the name must be the plain one.
+  run:
+    name: ${{ needs.prepare.outputs.empty_note && format('E2E Backend ({0})', needs.prepare.outputs.empty_note) || 'E2E Backend' }}
+    needs: prepare
+    if: needs.prepare.outputs.empty_note == ''
+    uses: ./.github/workflows/job-name-called.yml
+
+  # A plain job skipped by its if, for comparison.
+  plain:
+    name: ${{ format('Plain ({0})', needs.prepare.outputs.skip_note) }}
+    needs: prepare
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo plain
